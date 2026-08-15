@@ -1,0 +1,18 @@
+# Mac (Docker Desktop) 专用配置 — 桥接网络 + 发布端口，
+# 让浏览器能访问 http://localhost:5555。
+# 注：本配置面向“在 Mac 上监控远程 DGX Spark（走 SSH）”。
+services:
+  sparkdash:
+    image: sparkdash-sparkdash          # 复用刚构建好的镜像，避免重复构建
+    container_name: sparkDash
+    restart: always
+    network_mode: bridge                # 覆盖 host 网络
+    ports:
+      - "5555:5555"                     # 发布到 Mac
+    environment:
+      - BIND_HOST=0.0.0.0
+      - PORT=5555
+      - LLM_PORT=8888
+      - NODE_ENV=production
+    volumes:
+      - ./config:/app/config            # sparks.json / 加密密钥持久化
