@@ -17,8 +17,13 @@ import {
   decodeBenchManager,
   DECODE_BENCH_DEFAULTS,
 } from "./collectors/DecodeBench.js";
+import {
+  prefillBenchManager,
+  PREFILL_BENCH_DEFAULTS,
+} from "./collectors/PrefillBench.js";
 import { showcaseManager } from "./collectors/ShowcaseManager.js";
 import { llmProbeHost } from "./collectors/llmHost.js";
+import { llmDaily } from "./collectors/LlmDaily.js";
 import { compareSemver, getLatestRelease } from "./collectors/HermesReleases.js";
 
 dotenv.config();
@@ -27,7 +32,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, "..");
 
-const BIND_HOST = process.env.BIND_HOST || "0.0.0.0";
+// Default to loopback: the dashboard exposes SSH and remote power controls, so it
+// should not be reachable on the LAN unless explicitly opted in. Set BIND_HOST to the
+// host's LAN IP (or 0.0.0.0) to expose it; docker-compose.yml already sets 0.0.0.0.
+const BIND_HOST = process.env.BIND_HOST || "127.0.0.1";
 const PORT = parseInt(process.env.PORT || "5555", 10);
 const LLM_PORT = parseInt(process.env.LLM_PORT || "8888", 10);
 const COMFY_PORT = parseInt(process.env.COMFY_PORT || "8188", 10);
@@ -751,9 +759,30 @@ app.put("/api/sparks/:id/llm-ports/:port/api-key", (req, res) => {
 });
 
 /**
+ * Daily decode / prefill tok/s rollups (busy samples, last 14 UTC days by default).
+ * Query: port (required for multi-port), days (1–30).
+ */
+app.get("/api/sparks/:id/llm/daily", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  const ports =
+    Array.isArray(spark.llmPorts) && spark.llmPorts.length
+      ? spark.llmPorts
+      : [resolveLlmPort(spark)];
+  let port = req.query.port != null ? Number(req.query.port) : ports[0];
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return res.status(400).json({ error: "Invalid port" });
+  }
+  let days = req.query.days != null ? Number(req.query.days) : 14;
+  if (!Number.isFinite(days)) days = 14;
+  res.json(llmDaily.getSeries(spark.id, port, { days }));
+});
+
+/**
  * Decode throughput benchmark (streaming, post-first-token tok/s).
  *
- * POST body: { port?, concurrencies: number[], maxTokens? }
+ * POST body: { port?, concurrencies: number[], maxTokens?, promptType? }
+ * promptType is structured | prose | code | json (default structured).
  * Returns immediately with a bench job; poll GET for progress/results.
  */
 app.post("/api/sparks/:id/llm/bench", (req, res) => {
@@ -768,6 +797,9 @@ app.post("/api/sparks/:id/llm/bench", (req, res) => {
   if (showcaseManager.getActive(spark.id)) {
     return res.status(409).json({ error: "A prompt showcase is already running for this Spark" });
   }
+  if (prefillBenchManager.getActive(spark.id)) {
+    return res.status(409).json({ error: "A prefill benchmark is already running for this Spark" });
+  }
 
   const monitor = monitors.get(req.params.id);
   const ports = Array.isArray(spark.llmPorts) && spark.llmPorts.length
@@ -777,6 +809,9 @@ app.post("/api/sparks/:id/llm/bench", (req, res) => {
   let port = req.body?.port != null ? Number(req.body.port) : ports[0];
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     return res.status(400).json({ error: "Invalid port" });
+  }
+  if (!ports.includes(port)) {
+    return res.status(400).json({ error: "port is not configured for this Spark" });
   }
 
   // Resolve model id for this port from live snapshot when possible
@@ -801,6 +836,7 @@ app.post("/api/sparks/:id/llm/bench", (req, res) => {
       modelId,
       concurrencies: req.body?.concurrencies,
       maxTokens: req.body?.maxTokens,
+      promptType: req.body?.promptType,
       debug: benchDebug,
       apiKey: resolveLlmApiKey(spark, port),
       sampleHardware:
@@ -900,6 +936,127 @@ app.delete("/api/sparks/:id/llm/bench/:benchId", (req, res) => {
   const spark = registry.getSpark(req.params.id);
   if (!spark) return res.status(404).json({ error: "Spark not found" });
   const job = decodeBenchManager.cancel(spark.id, req.params.benchId);
+  if (!job) return res.status(404).json({ error: "Benchmark not found" });
+  res.json(job);
+});
+
+/**
+ * Prefill throughput + TTFT at selected context sizes (up to 300k).
+ *
+ * POST body: { port?, contextSizes: number[] }
+ * Returns 202 job; poll GET for progress/results.
+ */
+app.post("/api/sparks/:id/llm/prefill-bench", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  if (spark.workerNode) {
+    return res.status(400).json({ error: "Worker nodes do not expose a local LLM API" });
+  }
+  if (spark.llmMonitoring === false) {
+    return res.status(400).json({ error: "LLM monitoring is disabled for this Spark" });
+  }
+  if (showcaseManager.getActive(spark.id)) {
+    return res.status(409).json({ error: "A prompt showcase is already running for this Spark" });
+  }
+  if (decodeBenchManager.getActive(spark.id)) {
+    return res.status(409).json({ error: "A decode benchmark is already running for this Spark" });
+  }
+
+  const monitor = monitors.get(req.params.id);
+  const ports = Array.isArray(spark.llmPorts) && spark.llmPorts.length
+    ? spark.llmPorts
+    : [resolveLlmPort(spark)];
+
+  let port = req.body?.port != null ? Number(req.body.port) : ports[0];
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return res.status(400).json({ error: "Invalid port" });
+  }
+  if (!ports.includes(port)) {
+    return res.status(400).json({ error: "port is not configured for this Spark" });
+  }
+
+  let modelId = req.body?.modelId || null;
+  if (!modelId && monitor) {
+    const snap = monitor.snapshot();
+    const llmList = Array.isArray(snap?.metrics?.llm) ? snap.metrics.llm : [];
+    const portIndex = ports.indexOf(port);
+    const llm =
+      (portIndex >= 0 ? llmList[portIndex] : null) ||
+      llmList.find((m) => m?.available) ||
+      llmList[0];
+    modelId = llm?.modelId || null;
+  }
+
+  try {
+    const job = prefillBenchManager.start({
+      sparkId: spark.id,
+      lanIp: llmProbeHost(spark),
+      port,
+      modelId,
+      contextSizes: req.body?.contextSizes,
+      apiKey: resolveLlmApiKey(spark, port),
+    });
+    res.status(202).json(job);
+  } catch (err) {
+    const status = err.status || 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+app.get("/api/sparks/:id/llm/prefill-bench", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  const active = prefillBenchManager.getActive(spark.id);
+  const history = prefillBenchManager.getHistory(spark.id);
+  const portRaw = req.query.port;
+  const port =
+    portRaw != null && portRaw !== ""
+      ? parseInt(String(portRaw), 10)
+      : null;
+  const last = prefillBenchManager.getLast(
+    spark.id,
+    Number.isInteger(port) ? port : null
+  );
+  res.json({
+    active,
+    last,
+    history,
+    defaults: PREFILL_BENCH_DEFAULTS,
+  });
+});
+
+app.delete("/api/sparks/:id/llm/prefill-bench", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  if (prefillBenchManager.getActive(spark.id)) {
+    return res.status(409).json({ error: "Cannot clear history while a benchmark is running" });
+  }
+  const portRaw = req.query.port ?? req.body?.port;
+  const port =
+    portRaw != null && portRaw !== ""
+      ? parseInt(String(portRaw), 10)
+      : null;
+  prefillBenchManager.clearHistory(
+    spark.id,
+    Number.isInteger(port) ? port : null
+  );
+  res.json({ success: true });
+});
+
+app.get("/api/sparks/:id/llm/prefill-bench/:benchId", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  const job = prefillBenchManager.getJob(req.params.benchId);
+  if (!job || job.sparkId !== spark.id) {
+    return res.status(404).json({ error: "Benchmark not found" });
+  }
+  res.json(job);
+});
+
+app.delete("/api/sparks/:id/llm/prefill-bench/:benchId", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  const job = prefillBenchManager.cancel(spark.id, req.params.benchId);
   if (!job) return res.status(404).json({ error: "Benchmark not found" });
   res.json(job);
 });
@@ -1348,6 +1505,15 @@ startBroadcast();
 server.listen(PORT, BIND_HOST, () => {
   console.log(`[sparkDash] server listening on http://${BIND_HOST}:${PORT}`);
   console.log(`[sparkDash] WebSocket endpoint ws://${BIND_HOST}:${PORT}/ws`);
+  const isLoopback =
+    BIND_HOST === "localhost" || BIND_HOST === "::1" || /^127\./.test(BIND_HOST);
+  if (isLoopback) {
+    console.log("[sparkDash] localhost-only; set BIND_HOST=0.0.0.0 (or a LAN IP) to allow remote access");
+  } else {
+    console.warn(
+      `[sparkDash] WARNING: bound to ${BIND_HOST} — reachable on the LAN. This dashboard is unauthenticated and can SSH into and power off your Sparks; restrict access at the network/firewall layer.`
+    );
+  }
   startAllMonitors();
 });
 
@@ -1363,8 +1529,16 @@ function shutdown(signal) {
     decodeBenchManager.interruptAll(
       "Interrupted — server restarted while the benchmark was running"
     );
+    prefillBenchManager.interruptAll(
+      "Interrupted — server restarted while the benchmark was running"
+    );
   } catch (err) {
     console.error("[sparkDash] failed to finalize benchmarks:", err.message);
+  }
+  try {
+    llmDaily.flush();
+  } catch (err) {
+    console.error("[sparkDash] failed to flush LLM daily history:", err.message);
   }
   try {
     if (broadcastTimer) {

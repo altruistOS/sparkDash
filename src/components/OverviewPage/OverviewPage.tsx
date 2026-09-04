@@ -209,13 +209,52 @@ function SparkCard({
               color={vramBarColor}
               caption={vramTotal > 0 ? `${fmtStorage(vramUsed, false)} / ${fmtStorage(vramTotal, true)}` : "—"}
             />
+            {spark.kind === "host" && (() => {
+              // Non-Spark hosts: system RAM is separate from discrete VRAM.
+              const ram = spark.metrics.ram;
+              const rUsed = ram?.used ?? 0;
+              const rTotal = ram?.total ?? 0;
+              const rPct = rTotal > 0 ? Math.round((rUsed / rTotal) * 100) : 0;
+              const ramBarColor = rPct > 85 ? "bg-danger" : rPct > 60 ? "bg-warning" : "bg-accent";
+              return (
+                <MetricBar
+                  label="RAM"
+                  value={rUsed}
+                  max={rTotal}
+                  color={ramBarColor}
+                  caption={rTotal > 0 ? `${fmtStorage(rUsed, false)} / ${fmtStorage(rTotal, true)}` : "—"}
+                />
+              );
+            })()}
             <MetricBar
-              label="Temperature"
+              label={
+                spark.kind === "host" || (spark.metrics.cpu?.temperature ?? 0) > 0
+                  ? "GPU"
+                  : "Temperature"
+              }
               value={displayTemp}
               max={temperatureUnit === "fahrenheit" ? 212 : 100}
               color={tempBarColor}
               caption={tempLabel}
             />
+            {(spark.metrics.cpu?.temperature ?? 0) > 0 && (() => {
+              const cpuRaw = spark.metrics.cpu?.temperature ?? 0;
+              const cpuDisplay =
+                temperatureUnit === "fahrenheit" ? celsiusToFahrenheit(cpuRaw) : cpuRaw;
+              const cpuLabel =
+                temperatureUnit === "fahrenheit" ? `${cpuDisplay}°F` : `${cpuDisplay}°C`;
+              const cpuBarColor =
+                cpuRaw > 95 ? "bg-danger" : cpuRaw > 85 ? "bg-warning" : cpuRaw > 50 ? "bg-accent" : "bg-success";
+              return (
+                <MetricBar
+                  label="CPU"
+                  value={cpuDisplay}
+                  max={temperatureUnit === "fahrenheit" ? 212 : 100}
+                  color={cpuBarColor}
+                  caption={cpuLabel}
+                />
+              );
+            })()}
             {gpu?.throttle?.thermal && (
               <div
                 className="rounded border border-danger/40 bg-danger/10 px-2 py-1 text-[11px] font-medium text-danger"
@@ -298,7 +337,9 @@ function SparkCard({
                         ? "ds4"
                         : llm.backend === "sglang"
                           ? "sgLang"
-                          : llm.backend ?? "LLM"
+                          : llm.backend === "exl3"
+                            ? "EXL3"
+                            : llm.backend ?? "LLM"
                   }
                   value={llm.modelId ?? "unknown"}
                   tone="accent"
@@ -310,15 +351,25 @@ function SparkCard({
           </div>
 
           {(() => {
+            const role = resolveSparkRole(spark);
+            if (role === "worker") return null;
             const llmArr = spark.metrics.llm;
             const llm = Array.isArray(llmArr) ? llmArr.find((l) => l.available) : null;
             if (!llm) return null;
             return (
-              <div className="mt-3.5 border-t border-border pt-3 text-center">
-                <span className="font-tabular text-[28px] font-bold leading-none text-text-strong">
-                  {llm.generationTps.toFixed(0)}
-                </span>
-                <span className="text-sm font-normal text-muted"> tok/s</span>
+              <div className="mt-3.5 grid grid-cols-2 gap-2 border-t border-border pt-3">
+                <div className="text-center">
+                  <span className="font-tabular text-[28px] font-bold leading-none text-text-strong">
+                    {llm.generationTps.toFixed(0)}
+                  </span>
+                  <span className="text-sm font-normal text-muted"> tok/s</span>
+                </div>
+                <div className="border-l border-border text-center">
+                  <span className="font-tabular text-[28px] font-bold leading-none text-text-strong">
+                    {llm.prefillTps.toFixed(0)}
+                  </span>
+                  <span className="text-sm font-normal text-muted"> prefill</span>
+                </div>
               </div>
             );
           })()}
@@ -485,7 +536,7 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
         >
           Overview
         </h1>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-end justify-end gap-3">
           {batchMsg && (
             <span className={`text-[11px] ${batchMsg.tone === "ok" ? "text-success" : "text-danger"}`}>
               {batchMsg.text}
@@ -522,7 +573,7 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
             </div>
           )}
           {sparks.length > 0 && (
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
               {hermesMonitoredCount > 0 && (
                 <button
                   type="button"
