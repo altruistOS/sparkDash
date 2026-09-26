@@ -33,6 +33,7 @@ import {
   normalizeDecodeBenchType,
   DECODE_BENCH_DEFAULT_TYPE,
   DECODE_BENCH_TYPES,
+  DECODE_CODE_WARMUP_PROMPT,
 } from "../../src/shared/llmPrompts.js";
 import { formatLlmBaseUrl } from "../../src/shared/llmTarget.js";
 
@@ -123,7 +124,9 @@ function decodeRequestBody(modelId, prompt, maxTokens) {
  */
 async function warmupDecode({ baseUrl, modelId, abortSignal, apiKey, debug = false, promptType = DECODE_BENCH_DEFAULT_TYPE }) {
   const url = `${baseUrl}/v1/chat/completions`;
-  const warmupPrompt = decodeBenchPromptForType(promptType);
+  const kind = normalizeDecodeBenchType(promptType);
+  const warmupPrompt =
+    kind === "code" ? DECODE_CODE_WARMUP_PROMPT : decodeBenchPromptForType(kind);
   const body = decodeRequestBody(modelId, warmupPrompt, WARMUP_MAX_TOKENS);
   const ctrl = new AbortController();
   const onParentAbort = () => ctrl.abort();
@@ -438,6 +441,10 @@ export class DecodeBenchManager {
     this._recoverInterruptedActive();
   }
 
+  activeCount() {
+    return this.activeBySpark.size;
+  }
+
   getJob(benchId) {
     const job = this.jobs.get(benchId);
     if (job) return publicJob(job);
@@ -700,6 +707,7 @@ export class DecodeBenchManager {
       resolveTarget = null,
       host: rawHost = null,
       tls: rawTls = false,
+      owner = null,
     } = opts;
 
     if (this.activeBySpark.has(sparkId)) {
@@ -767,6 +775,7 @@ export class DecodeBenchManager {
         debugOn && typeof sampleHardware === "function" ? sampleHardware : null,
       _resolveTarget: typeof resolveTarget === "function" ? resolveTarget : null,
       _closeTarget: null,
+      owner: owner ? { id: owner.id, via: owner.via } : null,
     };
 
     this.jobs.set(benchId, job);
@@ -921,6 +930,8 @@ export class DecodeBenchManager {
   }
 }
 
+export { ALLOWED_CONCURRENCIES, DEFAULT_MAX_TOKENS, normalizeConcurrencies };
+
 function normalizeConcurrencies(raw) {
   if (!Array.isArray(raw)) return [];
   const out = [];
@@ -948,6 +959,7 @@ function publicJob(job) {
       job.completedAt != null
         ? job.completedAt - job.startedAt
         : Date.now() - job.startedAt,
+    owner: job.owner || null,
   };
 }
 
