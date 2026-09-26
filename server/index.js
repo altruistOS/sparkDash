@@ -17,7 +17,15 @@ import {
   validateDecodeBudget,
   validatePrefillBudget,
 } from "./validate.js";
-import { authorizeUpgrade, configuredToken, createAuthMiddleware, requireRemoteAuth } from "./auth.js";
+import {
+  authCookieName,
+  authorizeUpgrade,
+  configuredToken,
+  createAuthMiddleware,
+  extractCookieToken,
+  isValidToken,
+  requireRemoteAuth,
+} from "./auth.js";
 import { inspectHealth } from "./health.js";
 import { getSettings, updateSettings, loadSettings } from "./settings.js";
 import { broadcastForLanIp, effectiveMac, normalizeMac, sendWol } from "./wol.js";
@@ -316,6 +324,90 @@ app.use(createAuthMiddleware());
 
 app.get("/api/health", (_req, res) => {
   res.json(inspectHealth(process.env.BIND_HOST || "127.0.0.1"));
+});
+
+// ─── Browser login (cookie-based one-time sign-in) ────────
+// SPARKDASH_TOKEN protects remote binds; without a browser login page the
+// dashboard HTML itself is unreachable (401), so there is no way to sign in.
+// GET /login serves a minimal form; POST /login verifies the token with a
+// constant-time compare and sets a HostOnly cookie for one year.
+const AUTH_COOKIE = authCookieName();
+const AUTH_COOKIE_MAX_AGE = 365 * 24 * 3600; // one year, in seconds
+
+function loginPageHtml({ error = "" } = {}) {
+  const message = error
+    ? `<p class="error">${error}</p>`
+    : `<p>粘贴面板口令（SPARKDASH_TOKEN）登录，本机保存一年。</p>`;
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sparkDash 登录</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; background: #0b0f14;
+         color: #e6edf3; display: grid; place-items: center; min-height: 100vh; margin: 0; }
+  form { background: #161b22; padding: 2rem 2.5rem; border-radius: 12px;
+         border: 1px solid #30363d; min-width: 320px; }
+  h1 { font-size: 1.2rem; margin-top: 0; }
+  p { color: #8b949e; font-size: 0.9rem; }
+  input { width: 100%; box-sizing: border-box; padding: 0.6rem; margin: 0.75rem 0;
+          border-radius: 6px; border: 1px solid #30363d; background: #0d1117;
+          color: #e6edf3; font-size: 1rem; }
+  button { width: 100%; padding: 0.6rem; border: 0; border-radius: 6px;
+           background: #238636; color: #fff; font-size: 1rem; cursor: pointer; }
+  .error { color: #f85149; }
+</style>
+</head>
+<body>
+<form method="post" action="/login">
+  <h1>sparkDash</h1>
+  ${message}
+  <input type="password" name="token" placeholder="面板口令 SPARKDASH_TOKEN" autofocus autocomplete="current-password" required>
+  <button type="submit">登录</button>
+</form>
+</body>
+</html>`;
+}
+
+app.get("/login", (req, res) => {
+  const expected = configuredToken();
+  const cookieToken = extractCookieToken(req);
+  // Already signed in — go straight to the dashboard.
+  if (expected && isValidToken(cookieToken)) return res.redirect("/");
+  // One-click sign-in link: /login?token=... sets the cookie and clears
+  // itself from the address bar.
+  const queryToken = typeof req.query?.token === "string" ? req.query.token.trim() : "";
+  if (expected && queryToken && isValidToken(queryToken)) {
+    res.cookie(AUTH_COOKIE, queryToken, {
+      httpOnly: false,
+      sameSite: "lax",
+      maxAge: AUTH_COOKIE_MAX_AGE * 1000,
+    });
+    return res.redirect("/");
+  }
+  res.type("html").send(loginPageHtml());
+});
+
+app.post("/login", express.urlencoded({ extended: false }), (req, res) => {
+  const candidate = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+  if (!isValidToken(candidate)) {
+    res.status(401).type("html").send(loginPageHtml({ error: "口令不正确，请重试。" }));
+    return;
+  }
+  // HostOnly cookie; not HttpOnly so the SPA can also read it for its
+  // localStorage-based Bearer header (both mechanisms share one value).
+  res.cookie(AUTH_COOKIE, candidate, {
+    httpOnly: false,
+    sameSite: "lax",
+    maxAge: AUTH_COOKIE_MAX_AGE * 1000,
+  });
+  res.redirect("/");
+});
+
+app.post("/logout", (req, res) => {
+  res.clearCookie(AUTH_COOKIE);
+  res.redirect("/login");
 });
 
 function clientKey(req) {

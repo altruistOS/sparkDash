@@ -44,6 +44,9 @@ test("a new WebSocket client receives its initial snapshot without rebroadcastin
       ...process.env,
       BIND_HOST: "127.0.0.1",
       PORT: String(port),
+      // Tests must run tokenless even if a developer .env sets a token
+      // (dotenv.config() does not override already-set env vars).
+      SPARKDASH_TOKEN: "",
       SPARKS_JSON_PATH: sparksPath,
       SPARKS_SECRETS_PATH: path.join(tmp, "sparks-secrets.json"),
       SECRETS_KEY_PATH: path.join(tmp, ".secrets-key"),

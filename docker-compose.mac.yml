@@ -14,5 +14,7 @@ services:
       - PORT=5555
       - LLM_PORT=8888
       - NODE_ENV=production
+      # 口令本体在 gitignored 的 .env（SPARKDASH_TOKEN=...），不入库
+      - SPARKDASH_TOKEN=${SPARKDASH_TOKEN:-}
     volumes:
       - ./config:/app/config            # sparks.json / 加密密钥持久化
