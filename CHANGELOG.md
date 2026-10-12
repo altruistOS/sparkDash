@@ -9,6 +9,21 @@ Format: version sections are listed newest first.
 
 ## [Unreleased]
 
+### Added
+- **Models panel: "Run both".** Starting a model while another launcher on the same unit is running now offers **Run both** next to **Stop it, then start**, so two models can share a unit without starting the second by hand. The start script can still refuse if memory is short. Thanks @ZackSample (#195).
+
+### Fixed
+- **Disk read/write speed on remote units.** Only the unit sparkDash runs on measured it; every Linux unit reached over SSH and every Windows PC showed 0 B/s forever. Remote Linux units now read the block-device counters in the same SSH round trip as the disk usage, and Windows PCs read the per-drive performance counters, so the Storage panel shows live read and write speed (macOS units still show none). Two mounts on one physical disk no longer make the second read 0. Reported by a user ("disk I/O is not being reflected in real-time").
+
+---
+
+## [2.40.0] — 2026-10-11
+
+### Added
+- **LM Studio and Ollama are detected by their own endpoints** (`/api/v0/models`, `/api/tags`), so a server that answers 200 + JSON on every path (LM Studio) is no longer labelled SGLang or vLLM, and an identified backend is never downgraded. `/metrics` is no longer fetched from engines that never serve it. LLM panels are matched to their port instead of their position in the list, and the Add wizard, the "+ Add LLM port" panel and each LLM panel's settings have **LM Studio :1234 / Ollama :11434 / TensorFold :8888** presets that only fill in a port. From a contribution by @HassanEmam (#191).
+- **Windows units with an AMD iGPU (Strix Halo)** show GPU utilisation and memory from Windows' GPU performance counters when `nvidia-smi` is not installed (an NVIDIA PC whose `nvidia-smi` fails still reports the failure). Model launchers now say plainly that they are not supported on Windows. From #191.
+- **Every Overview panel can be hidden.** Settings now has switches for Recent activity and for each of the four tiles (Fleet decode, Fleet power, Memory in use, Tokens today), next to the existing Fleet energy and LLM token totals ones. The remaining tiles share the row, and a column with nothing left in it disappears. Hidden panels stay available from the sidebar pages. Suggested by a user.
+
 ### Fixed
 - **Windows PCs: "keys work everywhere but here".** The setup docs now explain that for an administrator account `sshd` ignores `~/.ssh/authorized_keys` and reads `C:\ProgramData\ssh\administrators_authorized_keys`, which only Administrators and SYSTEM may write (with the `icacls` command), and a refused key on a Windows unit adds the same hint to the connection error. Suggested by a user.
 

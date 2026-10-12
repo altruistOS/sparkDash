@@ -207,3 +207,71 @@ test("an unfinished PowerShell call is reused however old, a finished one only f
   c._windowsCache = new Map([["system", { at: Date.now() - 100, settled: true, promise: done }]]);
   assert.equal(c._windowsRun("system", "x"), done);
 });
+
+test("AMD-iGPU output (no nvidia-smi) parses through the same Linux-shaped sections", async () => {
+  const amdOut = [
+    "0,100,,0,0,0,,,,,0,AMD Radeon(TM) 8060S Graphics",
+    "---",
+    "73148,98304",
+    "---",
+    "---",
+    "AMD Radeon(TM) 8060S Graphics,32.0.31041.3013",
+    "---",
+    "MemTotal: 32538408 kB",
+    "MemAvailable: 7636648 kB",
+  ].join("\r\n");
+  const collector = new SystemCollector({ id: "desktop", platform: "windows", kind: "host", isLocal: false, ssh: { host: "100.10.10.10", user: "tester" } });
+  collector._windowsRun = async (key) => (key === "gpu" ? amdOut : "");
+  const gpu = await collector.collectGpu();
+  assert.equal(gpu.usage, 100);
+  assert.equal(gpu.temperature, 0); // AMD publishes no GPU temperature to Windows
+  assert.equal(gpu.power.draw, 0);
+  assert.equal(gpu.vram.used, 73148);
+  assert.equal(gpu.vram.total, 98304); // from the driver's reported memory size
+  assert.equal(gpu.vram.available, 98304 - 73148);
+  assert.equal(gpu.gpus.length, 1);
+  assert.deepEqual(gpu.processes, []);
+});
+
+test("WINDOWS_GPU_SCRIPT carries the AMD fallback and clamps engine utilization", () => {
+  assert.match(WINDOWS_GPU_SCRIPT, /GPUPerformanceCounters_GPUEngine/);
+  assert.match(WINDOWS_GPU_SCRIPT, /GPUAdapterMemory/);
+  assert.match(WINDOWS_GPU_SCRIPT, /\ -gt 100/);
+  assert.match(WINDOWS_GPU_SCRIPT, /qwMemorySize/);
+});
+
+test("the AMD fallback runs only when nvidia-smi is not installed, never when it is installed but failing", () => {
+  // A PC with a broken NVIDIA driver must stay empty (and fail the connection test) rather than
+  // show a GPU invented from the performance counters.
+  assert.match(WINDOWS_GPU_SCRIPT, /if\(-not \$s\)\{\n  \$eng = /);
+  assert.doesNotMatch(WINDOWS_GPU_SCRIPT, /if\(-not \$gpu\)/);
+  // The NVSMI default path only counts when the file exists.
+  assert.match(WINDOWS_GPU_SCRIPT, /Test-Path \$p/);
+});
+
+test("Windows drives report read/write speed from cumulative counters and the counter's own clock", async () => {
+  const stamp = (ms) => String(ms * 10_000);
+  const run = (ioRows) =>
+    [SYSTEM_OUT, "---", ioRows.join("\r\n")].join("\r\n");
+  const c = windowsCollector();
+  // 5 s apart: C: read 10 MiB and wrote 20 MiB; D: idle.
+  c._windowsRun = async () => run(["C:\t1000\t2000\t" + stamp(100_000), "D:\t0\t0\t" + stamp(100_000)]);
+  const first = await c.collectStorage();
+  assert.deepEqual(first.map((d) => [d.device, d.readSpeed, d.writeSpeed]), [["C:", 0, 0], ["D:", 0, 0]]);
+  c._windowsRun = async () =>
+    run(["C:\t" + (1000 + 10 * 1048576) + "\t" + (2000 + 20 * 1048576) + "\t" + stamp(105_000)]);
+  const second = await c.collectStorage();
+  const cdrive = second.find((d) => d.device === "C:");
+  assert.equal(cdrive.readSpeed, 2 * 1048576);
+  assert.equal(cdrive.writeSpeed, 4 * 1048576);
+  // A drive with no counter row (D: here) stays at 0 rather than failing.
+  assert.equal(second.find((d) => d.device === "D:").readSpeed, 0);
+  // The same cached output read again does not turn into a 0 speed for C:.
+  const again = await c.collectStorage();
+  assert.equal(again.find((d) => d.device === "C:").readSpeed, 2 * 1048576);
+});
+
+test("the Windows system script reads per-drive disk counters and still fits the command-line limit", () => {
+  assert.match(WINDOWS_SYSTEM_SCRIPT, /Win32_PerfRawData_PerfDisk_LogicalDisk/);
+  assert.ok(powershellCommand(WINDOWS_SYSTEM_SCRIPT).length < 8000);
+});
