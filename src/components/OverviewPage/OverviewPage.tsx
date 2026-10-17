@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import type { SparkSnapshot } from "../../api/types";
+import type { AlertInstance, SparkSnapshot } from "../../api/types";
 import { isWorkerSpark } from "../../api/sparkRole";
 import { updateAllHermes, wakeAllSparks } from "../../api/client";
 import { ShutdownAll } from "../ShutdownAll";
 import { FleetEnergyCard } from "./FleetEnergyCard";
 import { FleetAlertStrip } from "./FleetAlertStrip";
 import { FleetTokenTotals } from "./FleetTokenTotals";
+import { InferenceTrafficCard } from "./InferenceTrafficCard";
 import { FleetKpis, type KpiVisibility } from "./FleetKpis";
 import { ACTIVITY_ID, ENERGY_ID, TOKENS_ID } from "../../constants";
 import { SparkCard } from "./SparkCard";
@@ -21,7 +22,12 @@ interface OverviewPageProps {
   hideOffline?: boolean;
   hideWorkers?: boolean;
   showFleetEnergy?: boolean;
+  /** Opt-in server capability; absent sources add no card or polling. */
+  showInferenceActivity?: boolean;
   showFleetExceptions?: boolean;
+  /** Alert notifications on: the exceptions strip lists `serverAlerts` instead of deriving its own. */
+  alertsEnabled?: boolean;
+  serverAlerts?: AlertInstance[] | null;
   showOverviewSearch?: boolean;
   /** Overview LLM token totals card (cumulative tokens per model). */
   showLlmTokenTotals?: boolean;
@@ -42,7 +48,10 @@ export function OverviewPage({
   hideOffline = false,
   hideWorkers = false,
   showFleetEnergy = true,
+  showInferenceActivity = false,
   showFleetExceptions = false,
+  alertsEnabled = false,
+  serverAlerts = null,
   showOverviewSearch = false,
   showLlmTokenTotals = true,
   showActivityFeed = true,
@@ -284,7 +293,14 @@ export function OverviewPage({
         </div>
       </div>
 
-      <FleetAlertStrip sparks={sparks} onSelect={onSelectSpark} showExceptions={showFleetExceptions} temperatureUnit={temperatureUnit} />
+      <FleetAlertStrip
+        sparks={sparks}
+        onSelect={onSelectSpark}
+        showExceptions={showFleetExceptions}
+        temperatureUnit={temperatureUnit}
+        alertsEnabled={alertsEnabled}
+        serverAlerts={serverAlerts}
+      />
 
       {showOverviewSearch ? (
         <div className="ov-search" role="search" aria-label="Filter fleet units">
@@ -329,8 +345,9 @@ export function OverviewPage({
           })}
         </div>
         <FleetKpis sparks={visibleSparks} snapshotKey={sparks} show={kpis} />
-        {showFleetEnergy || showLlmTokenTotals || showActivityFeed ? (
+        {showFleetEnergy || showLlmTokenTotals || showActivityFeed || showInferenceActivity ? (
         <div className="ov-side">
+          {showInferenceActivity ? <InferenceTrafficCard /> : null}
           {showFleetEnergy ? <FleetEnergyCard nodeCount={sparks.length} nodeNames={Object.fromEntries(sparks.map((s) => [s.id, s.name]))} onOpenDetails={onNavigate ? () => onNavigate(ENERGY_ID) : undefined} /> : null}
           {showLlmTokenTotals ? <FleetTokenTotals onOpenDetails={onNavigate ? () => onNavigate(TOKENS_ID) : undefined} /> : null}
           {showActivityFeed ? (
