@@ -34,6 +34,7 @@ interface SparkPageProps {
   onEdit?: () => void;
   /** Navigate to a spark id (header back-to-overview link). */
   onNavigate?: (sparkId: string) => void;
+  onAddHarness?: () => void;
 }
 
 type SparkView = "all" | "resources" | "services";
@@ -56,6 +57,7 @@ export function SparkPage({
   metricsHistory = false,
   onEdit,
   onNavigate,
+  onAddHarness,
 }: SparkPageProps) {
   const { metrics } = spark;
   const [disabledDevices, setDisabledDevices] = useState<string[]>(spark.disabledDevices || []);
@@ -169,6 +171,8 @@ export function SparkPage({
         shareImage={benchShareImage}
         onRemovePort={canRemove ? handleRemovePort : undefined}
         className={className}
+        conversations={spark.conversations?.[String(port)] ?? []}
+        onAddHarness={onAddHarness}
       />
     );
   };
@@ -293,6 +297,14 @@ export function SparkPage({
                 {spark.platform !== "windows" && modelsPanel}
               </div>
             </Item>
+            {/* History closes the hardware column: the right column (LLM, storage, network) is
+                usually the taller one, so this fills the space under the GPU / memory / CPU row
+                instead of starting below both columns. Stacked (below xl) it stays last. */}
+            {metricsHistory && (
+              <Item order={40}>
+                <HistoryPanel key={spark.id} sparkId={spark.id} kind={spark.kind} temperatureUnit={temperatureUnit} />
+              </Item>
+            )}
           </div>
           <div className="sp-col">
             {view === "all" && showSvc && llmOn && primaryPort != null && (
@@ -340,10 +352,6 @@ export function SparkPage({
         </div>
       )}
 
-      {/* Full width under both columns: the small multiples need the room. */}
-      {metricsHistory && (
-        <HistoryPanel key={spark.id} sparkId={spark.id} kind={spark.kind} temperatureUnit={temperatureUnit} />
-      )}
     </div>
   );
 }
